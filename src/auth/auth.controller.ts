@@ -6,7 +6,7 @@ import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
-import { User } from '../common/entities/user.entity';
+import type { User } from '@prisma/client';
 
 @ApiTags('Authentication')
 @Controller('auth')

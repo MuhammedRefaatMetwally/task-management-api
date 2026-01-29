@@ -1,11 +1,11 @@
-import { Injectable, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { UsersService } from '../users/users.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import * as bcrypt from 'bcrypt';
-import { User } from '../common/entities/user.entity';
+import type { User } from '@prisma/client';
 
 @Injectable()
 export class AuthService {
@@ -40,7 +40,7 @@ export class AuthService {
   async refreshTokens(refreshToken: string) {
     try {
       const payload = this.jwtService.verify(refreshToken, {
-        secret: this.configService.get<string>('jwt.refreshSecret'),
+        secret: this.configService.get<string>('jwt.refreshSecret') || 'default-refresh-secret',
       });
 
       const user = await this.usersService.findById(payload.sub);
@@ -86,16 +86,23 @@ export class AuthService {
   }
 
   private async generateTokens(user: User) {
-    const payload = { sub: user.id, email: user.email, role: user.role };
+    const payload = { 
+      sub: user.id, 
+      email: user.email, 
+      role: user.role 
+    };
+
+    const jwtSecret = this.configService.get<string>('jwt.secret') || 'default-secret';
+    const jwtRefreshSecret = this.configService.get<string>('jwt.refreshSecret') || 'default-refresh-secret';
 
     const [accessToken, refreshToken] = await Promise.all([
       this.jwtService.signAsync(payload, {
-        secret: this.configService.get<string>('jwt.secret'),
-        expiresIn: this.configService.get<string>('jwt.expiresIn'),
+        secret: jwtSecret,
+        expiresIn: '15m',
       }),
       this.jwtService.signAsync(payload, {
-        secret: this.configService.get<string>('jwt.refreshSecret'),
-        expiresIn: this.configService.get<string>('jwt.refreshExpiresIn'),
+        secret: jwtRefreshSecret,
+        expiresIn: '7d',
       }),
     ]);
 

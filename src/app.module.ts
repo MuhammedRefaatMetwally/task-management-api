@@ -1,13 +1,13 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
-import { UsersModule } from './users/users.module';
-import { ProjectsModule } from './projects/projects.module';
-import { TasksModule } from './tasks/tasks.module';
-import { AuthModule } from './auth/auth.module';
 import configuration from './config/configuration';
+import { PrismaModule } from './prisma/prisma.module';
+import { UsersModule } from './users/users.module';
+import { TasksModule } from './tasks/tasks.module';
+import { ProjectsModule } from './projects/projects.module';
+import { AuthModule } from './auth/auth.module';
 
 @Module({
   imports: [
@@ -15,22 +15,10 @@ import configuration from './config/configuration';
       isGlobal: true,
       load: [configuration],
     }),
-    TypeOrmModule.forRootAsync({
-      imports: [ConfigModule],
-      useFactory: (configService: ConfigService) => ({
-        type: 'postgres',
-        url: configService.get('database.url'),
-        autoLoadEntities: true,
-        synchronize: process.env.NODE_ENV === 'development', 
-        ssl: {
-          rejectUnauthorized: false,
-        },
-      }),
-      inject: [ConfigService],
-    }),
+    PrismaModule,
     UsersModule,
-    ProjectsModule,
     TasksModule,
+    ProjectsModule,
     AuthModule,
   ],
   controllers: [AppController],

@@ -1,18 +1,19 @@
 import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { User } from '../common/entities/user.entity';
+import { PrismaService } from '../prisma/prisma.service';
+import type { User } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 
 @Injectable()
 export class UsersService {
-  constructor(
-    @InjectRepository(User)
-    private usersRepository: Repository<User>,
-  ) {}
+  constructor(private prisma: PrismaService) {}
 
-  async create(userData: Partial<User>): Promise<User> {
-    const existingUser = await this.usersRepository.findOne({
+  async create(userData: {
+    email: string;
+    firstName: string;
+    lastName: string;
+    password: string;
+  }): Promise<User> {
+    const existingUser = await this.prisma.user.findUnique({
       where: { email: userData.email },
     });
 
@@ -21,16 +22,17 @@ export class UsersService {
     }
 
     const hashedPassword = await bcrypt.hash(userData.password, 10);
-    const user = this.usersRepository.create({
-      ...userData,
-      password: hashedPassword,
+    
+    return this.prisma.user.create({
+      data: {
+        ...userData,
+        password: hashedPassword,
+      },
     });
-
-    return this.usersRepository.save(user);
   }
 
   async findById(id: string): Promise<User> {
-    const user = await this.usersRepository.findOne({ where: { id } });
+    const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) {
       throw new NotFoundException('User not found');
     }
@@ -38,17 +40,32 @@ export class UsersService {
   }
 
   async findByEmail(email: string): Promise<User | null> {
-    return this.usersRepository.findOne({ where: { email } });
+    return this.prisma.user.findUnique({ where: { email } });
   }
 
   async updateRefreshToken(userId: string, refreshToken: string | null): Promise<void> {
     const hashedToken = refreshToken ? await bcrypt.hash(refreshToken, 10) : null;
-    await this.usersRepository.update(userId, { refreshToken: hashedToken });
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { refreshToken: hashedToken },
+    });
   }
 
-  async findAll(): Promise<User[]> {
-    return this.usersRepository.find({
-      select: ['id', 'email', 'firstName', 'lastName', 'role', 'avatar', 'isActive', 'createdAt'],
+  async findAll(): Promise<Partial<User>[]> {
+    return this.prisma.user.findMany({
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        role: true,
+        avatar: true,
+        isActive: true,
+        createdAt: true,
+        password: false,
+        refreshToken: false,
+        updatedAt: false,
+      },
     });
   }
 }
