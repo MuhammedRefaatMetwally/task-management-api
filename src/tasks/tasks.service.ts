@@ -1,8 +1,6 @@
-import {
-  Injectable,
-  NotFoundException,
-  ForbiddenException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, Inject } from '@nestjs/common';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { Cache } from 'cache-manager';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationType } from '../notifications/dto/notification.dto';
 import { CreateTaskDto } from './dto/create-task.dto';
@@ -15,6 +13,7 @@ export class TasksService {
   constructor(
     private prisma: PrismaService,
     private notificationsGateway: NotificationsGateway,
+    @Inject(CACHE_MANAGER) private cacheManager: Cache,
   ) {}
 
   async create(userId: string, createTaskDto: CreateTaskDto): Promise<Task> {
@@ -63,6 +62,11 @@ export class TasksService {
       },
     });
 
+    // Invalidate caches
+    await this.cacheManager.del(`tasks:user:${userId}`);
+    await this.cacheManager.del(`tasks:project:${createTaskDto.projectId}`);
+    await this.cacheManager.del(`project:${createTaskDto.projectId}`);
+
     // Send notification if task is assigned to someone
     if (task.assignedToId && task.assignedToId !== userId) {
       this.notificationsGateway.sendNotificationToUser(task.assignedToId, {
@@ -78,9 +82,21 @@ export class TasksService {
   }
 
   async findAll(userId: string): Promise<Task[]> {
-    return this.prisma.task.findMany({
+    const cacheKey = `tasks:user:${userId}`;
+
+    // Try to get from cache
+    const cached = await this.cacheManager.get<Task[]>(cacheKey);
+    if (cached) {
+      console.log('Returning tasks from cache');
+      return cached;
+    }
+
+    const tasks = await this.prisma.task.findMany({
       where: {
-        OR: [{ createdById: userId }, { assignedToId: userId }],
+        OR: [
+          { createdById: userId },
+          { assignedToId: userId },
+        ],
       },
       include: {
         assignedTo: {
@@ -111,9 +127,22 @@ export class TasksService {
         createdAt: 'desc',
       },
     });
+
+    // Cache for 5 minutes
+    await this.cacheManager.set(cacheKey, tasks, 300000);
+
+    return tasks;
   }
 
   async findOne(id: string, userId: string): Promise<Task> {
+    const cacheKey = `task:${id}`;
+
+    const cached = await this.cacheManager.get<Task>(cacheKey);
+    if (cached) {
+      console.log('Returning task from cache');
+      return cached;
+    }
+
     const task = await this.prisma.task.findUnique({
       where: { id },
       include: {
@@ -156,14 +185,12 @@ export class TasksService {
       throw new ForbiddenException('You do not have access to this task');
     }
 
+    await this.cacheManager.set(cacheKey, task, 300000);
+
     return task;
   }
 
-  async update(
-    id: string,
-    userId: string,
-    updateTaskDto: UpdateTaskDto,
-  ): Promise<Task> {
+  async update(id: string, userId: string, updateTaskDto: UpdateTaskDto): Promise<Task> {
     const task = await this.prisma.task.findUnique({
       where: { id },
       include: {
@@ -176,18 +203,14 @@ export class TasksService {
     }
 
     if (task.createdById !== userId && task.project.ownerId !== userId) {
-      throw new ForbiddenException(
-        'You do not have permission to update this task',
-      );
+      throw new ForbiddenException('You do not have permission to update this task');
     }
 
     const updatedTask = await this.prisma.task.update({
       where: { id },
       data: {
         ...updateTaskDto,
-        dueDate: updateTaskDto.dueDate
-          ? new Date(updateTaskDto.dueDate)
-          : undefined,
+        dueDate: updateTaskDto.dueDate ? new Date(updateTaskDto.dueDate) : undefined,
       },
       include: {
         assignedTo: {
@@ -216,36 +239,35 @@ export class TasksService {
       },
     });
 
-    // Send notification on status change
-    if (
-      updateTaskDto.status &&
-      updatedTask.assignedToId &&
-      updatedTask.assignedToId !== userId
-    ) {
-      this.notificationsGateway.sendNotificationToUser(
-        updatedTask.assignedToId,
-        {
-          type: NotificationType.TASK_UPDATED,
-          title: 'Task Updated',
-          message: `"${updatedTask.title}" status changed to ${updatedTask.status}`,
-          userId: updatedTask.assignedToId,
-          data: updatedTask,
-        },
-      );
+    // Invalidate caches
+    await this.cacheManager.del(`task:${id}`);
+    await this.cacheManager.del(`tasks:user:${userId}`);
+    await this.cacheManager.del(`tasks:project:${task.projectId}`);
+    await this.cacheManager.del(`project:${task.projectId}`);
+
+    if (updatedTask.assignedToId) {
+      await this.cacheManager.del(`tasks:user:${updatedTask.assignedToId}`);
     }
 
-    // Notify on completion
+    // Send notifications
+    if (updateTaskDto.status && updatedTask.assignedToId && updatedTask.assignedToId !== userId) {
+      this.notificationsGateway.sendNotificationToUser(updatedTask.assignedToId, {
+        type: NotificationType.TASK_UPDATED,
+        title: 'Task Updated',
+        message: `"${updatedTask.title}" status changed to ${updatedTask.status}`,
+        userId: updatedTask.assignedToId,
+        data: updatedTask,
+      });
+    }
+
     if (updateTaskDto.isCompleted && updatedTask.createdById !== userId) {
-      this.notificationsGateway.sendNotificationToUser(
-        updatedTask.createdById,
-        {
-          type: NotificationType.TASK_COMPLETED,
-          title: 'Task Completed',
-          message: `"${updatedTask.title}" has been completed`,
-          userId: updatedTask.createdById,
-          data: updatedTask,
-        },
-      );
+      this.notificationsGateway.sendNotificationToUser(updatedTask.createdById, {
+        type: NotificationType.TASK_COMPLETED,
+        title: 'Task Completed',
+        message: `"${updatedTask.title}" has been completed`,
+        userId: updatedTask.createdById,
+        data: updatedTask,
+      });
     }
 
     return updatedTask;
@@ -264,17 +286,33 @@ export class TasksService {
     }
 
     if (task.createdById !== userId && task.project.ownerId !== userId) {
-      throw new ForbiddenException(
-        'You do not have permission to delete this task',
-      );
+      throw new ForbiddenException('You do not have permission to delete this task');
     }
 
     await this.prisma.task.delete({ where: { id } });
+
+    // Invalidate caches
+    await this.cacheManager.del(`task:${id}`);
+    await this.cacheManager.del(`tasks:user:${userId}`);
+    await this.cacheManager.del(`tasks:project:${task.projectId}`);
+    await this.cacheManager.del(`project:${task.projectId}`);
+
+    if (task.assignedToId) {
+      await this.cacheManager.del(`tasks:user:${task.assignedToId}`);
+    }
 
     return { message: 'Task deleted successfully' };
   }
 
   async findByProject(projectId: string, userId: string): Promise<Task[]> {
+    const cacheKey = `tasks:project:${projectId}`;
+
+    const cached = await this.cacheManager.get<Task[]>(cacheKey);
+    if (cached) {
+      console.log('Returning project tasks from cache');
+      return cached;
+    }
+
     const project = await this.prisma.project.findUnique({
       where: { id: projectId },
     });
@@ -287,7 +325,7 @@ export class TasksService {
       throw new ForbiddenException('You do not have access to this project');
     }
 
-    return this.prisma.task.findMany({
+    const tasks = await this.prisma.task.findMany({
       where: { projectId },
       include: {
         assignedTo: {
@@ -311,5 +349,9 @@ export class TasksService {
         createdAt: 'desc',
       },
     });
+
+    await this.cacheManager.set(cacheKey, tasks, 300000);
+
+    return tasks;
   }
 }
