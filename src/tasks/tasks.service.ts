@@ -1,6 +1,4 @@
-import { Injectable, NotFoundException, ForbiddenException, Inject } from '@nestjs/common';
-import { CACHE_MANAGER } from '@nestjs/cache-manager';
-import { Cache } from 'cache-manager';
+import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationType } from '../notifications/dto/notification.dto';
 import { CreateTaskDto } from './dto/create-task.dto';
@@ -13,7 +11,6 @@ export class TasksService {
   constructor(
     private prisma: PrismaService,
     private notificationsGateway: NotificationsGateway,
-    @Inject(CACHE_MANAGER) private cacheManager: Cache,
   ) {}
 
   async create(userId: string, createTaskDto: CreateTaskDto): Promise<Task> {
@@ -62,11 +59,6 @@ export class TasksService {
       },
     });
 
-    // Invalidate caches
-    await this.cacheManager.del(`tasks:user:${userId}`);
-    await this.cacheManager.del(`tasks:project:${createTaskDto.projectId}`);
-    await this.cacheManager.del(`project:${createTaskDto.projectId}`);
-
     // Send notification if task is assigned to someone
     if (task.assignedToId && task.assignedToId !== userId) {
       this.notificationsGateway.sendNotificationToUser(task.assignedToId, {
@@ -82,16 +74,7 @@ export class TasksService {
   }
 
   async findAll(userId: string): Promise<Task[]> {
-    const cacheKey = `tasks:user:${userId}`;
-
-    // Try to get from cache
-    const cached = await this.cacheManager.get<Task[]>(cacheKey);
-    if (cached) {
-      console.log('Returning tasks from cache');
-      return cached;
-    }
-
-    const tasks = await this.prisma.task.findMany({
+    return this.prisma.task.findMany({
       where: {
         OR: [
           { createdById: userId },
@@ -127,22 +110,9 @@ export class TasksService {
         createdAt: 'desc',
       },
     });
-
-    // Cache for 5 minutes
-    await this.cacheManager.set(cacheKey, tasks, 300000);
-
-    return tasks;
   }
 
   async findOne(id: string, userId: string): Promise<Task> {
-    const cacheKey = `task:${id}`;
-
-    const cached = await this.cacheManager.get<Task>(cacheKey);
-    if (cached) {
-      console.log('Returning task from cache');
-      return cached;
-    }
-
     const task = await this.prisma.task.findUnique({
       where: { id },
       include: {
@@ -184,8 +154,6 @@ export class TasksService {
     ) {
       throw new ForbiddenException('You do not have access to this task');
     }
-
-    await this.cacheManager.set(cacheKey, task, 300000);
 
     return task;
   }
@@ -239,16 +207,6 @@ export class TasksService {
       },
     });
 
-    // Invalidate caches
-    await this.cacheManager.del(`task:${id}`);
-    await this.cacheManager.del(`tasks:user:${userId}`);
-    await this.cacheManager.del(`tasks:project:${task.projectId}`);
-    await this.cacheManager.del(`project:${task.projectId}`);
-
-    if (updatedTask.assignedToId) {
-      await this.cacheManager.del(`tasks:user:${updatedTask.assignedToId}`);
-    }
-
     // Send notifications
     if (updateTaskDto.status && updatedTask.assignedToId && updatedTask.assignedToId !== userId) {
       this.notificationsGateway.sendNotificationToUser(updatedTask.assignedToId, {
@@ -291,28 +249,10 @@ export class TasksService {
 
     await this.prisma.task.delete({ where: { id } });
 
-    // Invalidate caches
-    await this.cacheManager.del(`task:${id}`);
-    await this.cacheManager.del(`tasks:user:${userId}`);
-    await this.cacheManager.del(`tasks:project:${task.projectId}`);
-    await this.cacheManager.del(`project:${task.projectId}`);
-
-    if (task.assignedToId) {
-      await this.cacheManager.del(`tasks:user:${task.assignedToId}`);
-    }
-
     return { message: 'Task deleted successfully' };
   }
 
   async findByProject(projectId: string, userId: string): Promise<Task[]> {
-    const cacheKey = `tasks:project:${projectId}`;
-
-    const cached = await this.cacheManager.get<Task[]>(cacheKey);
-    if (cached) {
-      console.log('Returning project tasks from cache');
-      return cached;
-    }
-
     const project = await this.prisma.project.findUnique({
       where: { id: projectId },
     });
@@ -325,7 +265,7 @@ export class TasksService {
       throw new ForbiddenException('You do not have access to this project');
     }
 
-    const tasks = await this.prisma.task.findMany({
+    return this.prisma.task.findMany({
       where: { projectId },
       include: {
         assignedTo: {
@@ -349,9 +289,5 @@ export class TasksService {
         createdAt: 'desc',
       },
     });
-
-    await this.cacheManager.set(cacheKey, tasks, 300000);
-
-    return tasks;
   }
 }
