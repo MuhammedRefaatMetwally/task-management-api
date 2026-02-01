@@ -12,8 +12,14 @@ async function bootstrap() {
   app.use(helmet());
 
   app.enableCors({
-    origin: configService.get('frontendUrl'),
+    origin: [
+      'http://localhost:3001',
+      'http://127.0.0.1:3001',
+      configService.get('frontendUrl') || 'http://localhost:3001',
+    ],
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   });
 
   const apiPrefix = configService.get<string>('apiPrefix') || 'api/v1';
