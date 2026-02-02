@@ -26,10 +26,21 @@ export class TasksService {
       throw new ForbiddenException('You do not have access to this project');
     }
 
+    const maxOrderTask = await this.prisma.task.findFirst({
+      where: {
+        projectId: createTaskDto.projectId,
+        status: createTaskDto.status || 'TODO',
+      },
+      orderBy: { order: 'desc' },
+    });
+
+    const order = maxOrderTask ? maxOrderTask.order + 1 : 0;
+
     const task = await this.prisma.task.create({
       data: {
         ...createTaskDto,
         createdById: userId,
+        order,
         dueDate: createTaskDto.dueDate ? new Date(createTaskDto.dueDate) : null,
       },
       include: {
@@ -59,7 +70,12 @@ export class TasksService {
       },
     });
 
-    // Send notification if task is assigned to someone
+    this.notificationsGateway.broadcastToProject(
+      createTaskDto.projectId,
+      'task:created',
+      task,
+    );
+
     if (task.assignedToId && task.assignedToId !== userId) {
       this.notificationsGateway.sendNotificationToUser(task.assignedToId, {
         type: NotificationType.TASK_ASSIGNED,
@@ -76,10 +92,7 @@ export class TasksService {
   async findAll(userId: string): Promise<Task[]> {
     return this.prisma.task.findMany({
       where: {
-        OR: [
-          { createdById: userId },
-          { assignedToId: userId },
-        ],
+        OR: [{ createdById: userId }, { assignedToId: userId }],
       },
       include: {
         assignedTo: {
@@ -106,9 +119,44 @@ export class TasksService {
           },
         },
       },
-      orderBy: {
-        createdAt: 'desc',
+      orderBy: [{ status: 'asc' }, { order: 'asc' }],
+    });
+  }
+
+  async findByProject(projectId: string, userId: string): Promise<Task[]> {
+    const project = await this.prisma.project.findUnique({
+      where: { id: projectId },
+    });
+
+    if (!project) {
+      throw new NotFoundException('Project not found');
+    }
+
+    if (project.ownerId !== userId) {
+      throw new ForbiddenException('You do not have access to this project');
+    }
+
+    return this.prisma.task.findMany({
+      where: { projectId },
+      include: {
+        assignedTo: {
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+        createdBy: {
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
       },
+      orderBy: [{ status: 'asc' }, { order: 'asc' }],
     });
   }
 
@@ -161,9 +209,7 @@ export class TasksService {
   async update(id: string, userId: string, updateTaskDto: UpdateTaskDto): Promise<Task> {
     const task = await this.prisma.task.findUnique({
       where: { id },
-      include: {
-        project: true,
-      },
+      include: { project: true },
     });
 
     if (!task) {
@@ -207,7 +253,12 @@ export class TasksService {
       },
     });
 
-    // Send notifications
+    this.notificationsGateway.broadcastToProject(
+      task.projectId,
+      'task:updated',
+      updatedTask,
+    );
+
     if (updateTaskDto.status && updatedTask.assignedToId && updatedTask.assignedToId !== userId) {
       this.notificationsGateway.sendNotificationToUser(updatedTask.assignedToId, {
         type: NotificationType.TASK_UPDATED,
@@ -234,9 +285,7 @@ export class TasksService {
   async remove(id: string, userId: string): Promise<{ message: string }> {
     const task = await this.prisma.task.findUnique({
       where: { id },
-      include: {
-        project: true,
-      },
+      include: { project: true },
     });
 
     if (!task) {
@@ -249,24 +298,40 @@ export class TasksService {
 
     await this.prisma.task.delete({ where: { id } });
 
+    this.notificationsGateway.broadcastToProject(
+      task.projectId,
+      'task:deleted',
+      { id: task.id, projectId: task.projectId },
+    );
+
     return { message: 'Task deleted successfully' };
   }
 
-  async findByProject(projectId: string, userId: string): Promise<Task[]> {
-    const project = await this.prisma.project.findUnique({
-      where: { id: projectId },
+  async moveTask(
+    id: string,
+    userId: string,
+    newStatus: string,
+    newOrder: number,
+  ): Promise<Task> {
+    const task = await this.prisma.task.findUnique({
+      where: { id },
+      include: { project: true },
     });
 
-    if (!project) {
-      throw new NotFoundException('Project not found');
+    if (!task) {
+      throw new NotFoundException('Task not found');
     }
 
-    if (project.ownerId !== userId) {
-      throw new ForbiddenException('You do not have access to this project');
+    if (task.createdById !== userId && task.project.ownerId !== userId) {
+      throw new ForbiddenException('You do not have permission to move this task');
     }
 
-    return this.prisma.task.findMany({
-      where: { projectId },
+    const updatedTask = await this.prisma.task.update({
+      where: { id },
+      data: {
+        status: newStatus as any,
+        order: newOrder,
+      },
       include: {
         assignedTo: {
           select: {
@@ -284,10 +349,55 @@ export class TasksService {
             lastName: true,
           },
         },
-      },
-      orderBy: {
-        createdAt: 'desc',
+        project: {
+          select: {
+            id: true,
+            name: true,
+            color: true,
+          },
+        },
       },
     });
+
+    this.notificationsGateway.broadcastToProject(
+      task.projectId,
+      'task:moved',
+      updatedTask,
+    );
+
+    return updatedTask;
+  }
+
+  async reorderTasks(
+    projectId: string,
+    userId: string,
+    tasks: { id: string; order: number }[],
+  ): Promise<void> {
+    const project = await this.prisma.project.findUnique({
+      where: { id: projectId },
+    });
+
+    if (!project) {
+      throw new NotFoundException('Project not found');
+    }
+
+    if (project.ownerId !== userId) {
+      throw new ForbiddenException('You do not have access to this project');
+    }
+
+    await this.prisma.$transaction(
+      tasks.map((task) =>
+        this.prisma.task.update({
+          where: { id: task.id },
+          data: { order: task.order },
+        }),
+      ),
+    );
+
+    this.notificationsGateway.broadcastToProject(
+      projectId,
+      'tasks:reordered',
+      tasks,
+    );
   }
 }

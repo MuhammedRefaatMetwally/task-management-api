@@ -61,4 +61,23 @@ export class TasksController {
   remove(@Param('id') id: string, @CurrentUser() user: User) {
     return this.tasksService.remove(id, user.id);
   }
+
+  @Patch(':id/move')
+  @ApiOperation({ summary: 'Move task to different status/order' })
+  moveTask(
+    @Param('id') id: string,
+    @CurrentUser() user: User,
+    @Body() body: { status: string; order: number },
+  ) {
+    return this.tasksService.moveTask(id, user.id, body.status, body.order);
+  }
+
+  @Post('reorder')
+  @ApiOperation({ summary: 'Reorder tasks in a project' })
+  reorderTasks(
+    @CurrentUser() user: User,
+    @Body() body: { projectId: string; tasks: { id: string; order: number }[] },
+  ) {
+    return this.tasksService.reorderTasks(body.projectId, user.id, body.tasks);
+  }
 }

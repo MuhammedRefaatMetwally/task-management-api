@@ -8,7 +8,6 @@ import {
   MessageBody,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { UseGuards } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { NotificationsService } from '../notifications.service';
@@ -16,15 +15,17 @@ import { NotificationDto } from '../dto/notification.dto';
 
 @WebSocketGateway({
   cors: {
-    origin: process.env.FRONTEND_URL || 'http://localhost:3001',
+    origin: ['http://localhost:3001', 'http://127.0.0.1:3001'],
     credentials: true,
   },
 })
-export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class NotificationsGateway
+  implements OnGatewayConnection, OnGatewayDisconnect
+{
   @WebSocketServer()
   server: Server;
 
-  private connectedUsers: Map<string, string> = new Map(); // userId -> socketId
+  private connectedUsers: Map<string, string> = new Map();
 
   constructor(
     private jwtService: JwtService,
@@ -34,8 +35,10 @@ export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisco
 
   async handleConnection(client: Socket) {
     try {
-      const token = client.handshake.auth.token || client.handshake.headers.authorization?.split(' ')[1];
-      
+      const token =
+        client.handshake.auth.token ||
+        client.handshake.headers.authorization?.split(' ')[1];
+
       if (!token) {
         client.disconnect();
         return;
@@ -47,18 +50,19 @@ export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisco
 
       const userId = payload.sub;
       this.connectedUsers.set(userId, client.id);
-      
+
       client.data.userId = userId;
       client.join(`user:${userId}`);
 
-      console.log(`Client connected: ${client.id}, User: ${userId}`);
+      console.log(`✅ WebSocket connected: User ${userId}`);
 
-      const notifications = this.notificationsService.getUserNotifications(userId);
+      const notifications =
+        this.notificationsService.getUserNotifications(userId);
       if (notifications.length > 0) {
         client.emit('notifications', notifications);
       }
     } catch (error) {
-      console.error('WebSocket authentication error:', error);
+      console.error('❌ WebSocket authentication error:', error);
       client.disconnect();
     }
   }
@@ -67,26 +71,28 @@ export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisco
     const userId = client.data.userId;
     if (userId) {
       this.connectedUsers.delete(userId);
-      console.log(`Client disconnected: ${client.id}, User: ${userId}`);
+      console.log(`❌ WebSocket disconnected: User ${userId}`);
     }
   }
 
-  @SubscribeMessage('join-room')
-  handleJoinRoom(
+  @SubscribeMessage('join-project')
+  handleJoinProject(
     @ConnectedSocket() client: Socket,
-    @MessageBody() room: string,
+    @MessageBody() projectId: string,
   ) {
-    client.join(room);
-    return { event: 'joined-room', data: room };
+    client.join(`project:${projectId}`);
+    console.log(`User ${client.data.userId} joined project ${projectId}`);
+    return { event: 'joined-project', data: projectId };
   }
 
-  @SubscribeMessage('leave-room')
-  handleLeaveRoom(
+  @SubscribeMessage('leave-project')
+  handleLeaveProject(
     @ConnectedSocket() client: Socket,
-    @MessageBody() room: string,
+    @MessageBody() projectId: string,
   ) {
-    client.leave(room);
-    return { event: 'left-room', data: room };
+    client.leave(`project:${projectId}`);
+    console.log(`User ${client.data.userId} left project ${projectId}`);
+    return { event: 'left-project', data: projectId };
   }
 
   sendNotificationToUser(userId: string, notification: NotificationDto) {
@@ -94,8 +100,8 @@ export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisco
     this.notificationsService.addNotification(notification);
   }
 
-  sendNotificationToRoom(room: string, notification: NotificationDto) {
-    this.server.to(room).emit('notification', notification);
+  broadcastToProject(projectId: string, event: string, data: any) {
+    this.server.to(`project:${projectId}`).emit(event, data);
   }
 
   broadcast(event: string, data: any) {
